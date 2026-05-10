@@ -9,7 +9,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/beizirugu/hy2-install/main/i
 如果系统没有 `curl`，可使用：
 
 ```bash
-wget -O install_hysteria2.sh https://raw.githubusercontent.com/beizirugu/hy2-install/main/install.sh && sudo bash install.sh
+wget -O install.sh https://raw.githubusercontent.com/beizirugu/hy2-install/main/install.sh && sudo bash install.sh
 ```
 
 仓库地址：[beizirugu/hy2-install](https://github.com/beizirugu/hy2-install)
@@ -26,14 +26,15 @@ wget -O install_hysteria2.sh https://raw.githubusercontent.com/beizirugu/hy2-ins
 - `listen` 使用端口范围，触发 Hysteria 2 Linux 端口跳跃。
 - 开启 Salamander 混淆、Bing 伪装站、动态 QUIC 窗口。
 - 检测日志目录磁盘类型与简单同步写入速度，日志级别通过 `HYSTERIA_LOG_LEVEL=error` 固定为 error，保护慢盘。
+- 长时间安装步骤会在终端显示进度条，详细输出仍写入本地日志。
 - 启动前检测本机是否已有 Hy2 正在运行，已运行时可选择卸载或退出。
 - 支持 `--uninstall` 清理服务、配置、本脚本写入的 sysctl、systemd drop-in 和 Hysteria 相关 nftables 残留表。
 
 ## 使用
 
 ```bash
-chmod +x install_hysteria2.sh
-sudo bash install_hysteria2.sh
+chmod +x install.sh
+sudo bash install.sh
 ```
 
 运行时会要求输入：

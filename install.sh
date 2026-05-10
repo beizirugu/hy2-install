@@ -17,6 +17,7 @@ MODE="install"
 HY2_LOG_LEVEL="error"
 IO_TEST_MB=16
 IO_SLOW_THRESHOLD_MB=30
+PROGRESS_WIDTH=28
 
 if [[ -t 1 ]]; then
   RED='\033[31m'
@@ -38,6 +39,46 @@ info() { printf "%b\n" "${BLUE}==>${RESET} $*"; }
 ok() { printf "%b\n" "${GREEN}✔${RESET} $*"; }
 warn() { printf "%b\n" "${YELLOW}警告:${RESET} $*"; }
 fail() { printf "%b\n" "${RED}错误:${RESET} $*"; }
+
+draw_progress() {
+  local percent=$1
+  local label=$2
+  local filled empty filled_bar empty_bar
+  filled=$((percent * PROGRESS_WIDTH / 100))
+  empty=$((PROGRESS_WIDTH - filled))
+  printf -v filled_bar '%*s' "${filled}" ''
+  printf -v empty_bar '%*s' "${empty}" ''
+  filled_bar=${filled_bar// /#}
+  empty_bar=${empty_bar// /-}
+  printf "\r    %b[%s%s]%b %3d%% %s" "${GREEN}" "${filled_bar}" "${empty_bar}" "${RESET}" "${percent}" "${label}"
+}
+
+show_progress() {
+  local status_file=$1
+  local percent=5
+  local spin='|/-\'
+  local spin_char
+  local idx=0
+
+  if [[ ! -t 1 ]]; then
+    while [[ ! -s ${status_file} ]]; do
+      sleep 0.2
+    done
+    return 0
+  fi
+
+  while [[ ! -s ${status_file} ]]; do
+    spin_char=${spin:$((idx % 4)):1}
+    draw_progress "${percent}" "执行中 ${spin_char}"
+    if (( percent < 95 )); then
+      percent=$((percent + 3))
+    fi
+    idx=$((idx + 1))
+    sleep 0.15
+  done
+  draw_progress 100 "完成"
+  printf "\n"
+}
 
 on_error() {
   local code=$?
@@ -69,6 +110,7 @@ prepare_log() {
 
 run_cmd() {
   local desc=$1
+  local status_file pid code
   shift
   info "${desc}"
   {
@@ -78,11 +120,24 @@ run_cmd() {
     printf ' %q' "$@"
     echo
   } >>"${LOG_FILE}"
-  "$@" >>"${LOG_FILE}" 2>&1
+
+  status_file=$(mktemp)
+  (
+    set +e
+    "$@" >>"${LOG_FILE}" 2>&1
+    printf '%s' "$?" >"${status_file}"
+  ) &
+  pid=$!
+  show_progress "${status_file}"
+  wait "${pid}" 2>/dev/null || true
+  code=$(cat "${status_file}")
+  rm -f "${status_file}"
+  return "${code}"
 }
 
 try_cmd() {
   local desc=$1
+  local status_file pid code
   shift
   info "${desc}"
   {
@@ -92,11 +147,24 @@ try_cmd() {
     printf ' %q' "$@"
     echo
   } >>"${LOG_FILE}"
-  if "$@" >>"${LOG_FILE}" 2>&1; then
+
+  status_file=$(mktemp)
+  (
+    set +e
+    "$@" >>"${LOG_FILE}" 2>&1
+    printf '%s' "$?" >"${status_file}"
+  ) &
+  pid=$!
+  show_progress "${status_file}"
+  wait "${pid}" 2>/dev/null || true
+  code=$(cat "${status_file}")
+  rm -f "${status_file}"
+
+  if [[ ${code} -eq 0 ]]; then
     return 0
   fi
   warn "${desc} 未完成，已继续。"
-  return 1
+  return "${code}"
 }
 
 usage() {
