@@ -44,21 +44,32 @@ draw_progress() {
   local percent=$1
   local label=$2
   local filled empty filled_bar empty_bar
+  label=${label:0:56}
   filled=$((percent * PROGRESS_WIDTH / 100))
   empty=$((PROGRESS_WIDTH - filled))
   printf -v filled_bar '%*s' "${filled}" ''
   printf -v empty_bar '%*s' "${empty}" ''
   filled_bar=${filled_bar// /#}
   empty_bar=${empty_bar// /-}
-  printf "\r    %b[%s%s]%b %3d%% %s" "${GREEN}" "${filled_bar}" "${empty_bar}" "${RESET}" "${percent}" "${label}"
+  printf "\r\033[K    %b[%s%s]%b %3d%% %s" "${GREEN}" "${filled_bar}" "${empty_bar}" "${RESET}" "${percent}" "${label}"
+}
+
+draw_activity() {
+  local label=$1
+  local spin_char=$2
+  local elapsed=$3
+  label=${label:0:56}
+  printf "\r\033[K    %b%s%b %s，已运行 %ss" "${BLUE}" "${spin_char}" "${RESET}" "${label}" "${elapsed}"
 }
 
 show_progress() {
   local status_file=$1
-  local percent=5
+  local progress_file=${2:-}
+  local fallback_label=${3:-运行中}
   local spin='|/-\'
   local spin_char
   local idx=0
+  local start_ts elapsed state percent label used_percent=0
 
   if [[ ! -t 1 ]]; then
     while [[ ! -s ${status_file} ]]; do
@@ -67,17 +78,73 @@ show_progress() {
     return 0
   fi
 
+  start_ts=$(date +%s)
   while [[ ! -s ${status_file} ]]; do
     spin_char=${spin:$((idx % 4)):1}
-    draw_progress "${percent}" "执行中 ${spin_char}"
-    if (( percent < 95 )); then
-      percent=$((percent + 3))
+    elapsed=$(($(date +%s) - start_ts))
+    if [[ -n ${progress_file} && -s ${progress_file} ]]; then
+      state=$(tail -n 1 "${progress_file}" 2>/dev/null || true)
+      percent=${state%%|*}
+      label=${state#*|}
+      if [[ ${percent} =~ ^[0-9]+$ ]]; then
+        used_percent=1
+        draw_progress "${percent}" "${label:-APT 正在处理}"
+      else
+        draw_activity "${fallback_label}" "${spin_char}" "${elapsed}"
+      fi
+    else
+      draw_activity "${fallback_label}" "${spin_char}" "${elapsed}"
     fi
     idx=$((idx + 1))
     sleep 0.15
   done
-  draw_progress 100 "完成"
+
+  if (( used_percent == 1 )); then
+    draw_progress 100 "完成"
+  else
+    printf "\r\033[K    %b✔%b 完成\n" "${GREEN}" "${RESET}"
+    return 0
+  fi
   printf "\n"
+}
+
+parse_apt_progress() {
+  local progress_file=$1
+  local line kind a b c rest percent label
+
+  while IFS= read -r line; do
+    printf '[APT_STATUS] %s\n' "${line}" >>"${LOG_FILE}"
+    IFS=':' read -r kind a b c rest <<<"${line}"
+    percent=""
+    label=""
+
+    case "${kind}" in
+      dlstatus)
+        if [[ -n ${c:-} ]]; then
+          percent=${b%%.*}
+          label=${c:-下载软件包}
+        else
+          percent=${a%%.*}
+          label=${b:-下载软件包}
+        fi
+        ;;
+      pmstatus)
+        percent=${b%%.*}
+        label="${a:-软件包} ${c:-配置中}"
+        ;;
+      pmerror|error)
+        percent=${b%%.*}
+        label="APT 错误：${c:-${a:-未知错误}}"
+        ;;
+    esac
+
+    if [[ ${percent} =~ ^[0-9]+$ ]]; then
+      (( percent < 0 )) && percent=0
+      (( percent > 100 )) && percent=100
+      label=${label//$'\r'/}
+      printf '%s|%s\n' "${percent}" "${label:-APT 正在处理}" >"${progress_file}"
+    fi
+  done
 }
 
 on_error() {
@@ -128,10 +195,50 @@ run_cmd() {
     printf '%s' "$?" >"${status_file}"
   ) &
   pid=$!
-  show_progress "${status_file}"
+  show_progress "${status_file}" "" "执行中"
   wait "${pid}" 2>/dev/null || true
   code=$(cat "${status_file}")
   rm -f "${status_file}"
+  return "${code}"
+}
+
+run_apt_cmd() {
+  local desc=$1
+  local status_file progress_file fifo pid reader_pid code
+  shift
+  info "${desc}"
+  {
+    echo
+    echo "[$(date '+%F %T')] ${desc}"
+    printf '+'
+    printf ' %q' apt-get -o APT::Status-Fd=3 -o Dpkg::Status-Fd=3 -o Dpkg::Use-Pty=0 -o Dpkg::Progress-Fancy=0 "$@"
+    echo
+  } >>"${LOG_FILE}"
+
+  status_file=$(mktemp)
+  progress_file=$(mktemp)
+  fifo=$(mktemp -u)
+  mkfifo "${fifo}"
+
+  parse_apt_progress "${progress_file}" <"${fifo}" &
+  reader_pid=$!
+  (
+    set +e
+    DEBIAN_FRONTEND=noninteractive apt-get \
+      -o APT::Status-Fd=3 \
+      -o Dpkg::Status-Fd=3 \
+      -o Dpkg::Use-Pty=0 \
+      -o Dpkg::Progress-Fancy=0 \
+      "$@" 3>"${fifo}" >>"${LOG_FILE}" 2>&1
+    printf '%s' "$?" >"${status_file}"
+  ) &
+  pid=$!
+
+  show_progress "${status_file}" "${progress_file}" "APT 正在处理"
+  wait "${pid}" 2>/dev/null || true
+  wait "${reader_pid}" 2>/dev/null || true
+  code=$(cat "${status_file}")
+  rm -f "${status_file}" "${progress_file}" "${fifo}"
   return "${code}"
 }
 
@@ -155,7 +262,7 @@ try_cmd() {
     printf '%s' "$?" >"${status_file}"
   ) &
   pid=$!
-  show_progress "${status_file}"
+  show_progress "${status_file}" "" "执行中"
   wait "${pid}" 2>/dev/null || true
   code=$(cat "${status_file}")
   rm -f "${status_file}"
@@ -238,8 +345,8 @@ parse_args() {
 install_deps() {
   info "检查并安装必要组件"
   if command -v apt-get >/dev/null 2>&1; then
-    run_cmd "更新 apt 软件源" apt-get update
-    run_cmd "安装依赖：curl/openssl/nftables" env DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates openssl procps iproute2 nftables util-linux
+    run_apt_cmd "更新 apt 软件源" update
+    run_apt_cmd "安装依赖：curl/openssl/nftables" install -y curl ca-certificates openssl procps iproute2 nftables util-linux
   elif command -v dnf >/dev/null 2>&1; then
     run_cmd "安装依赖：curl/openssl/nftables" dnf install -y curl ca-certificates openssl procps-ng iproute nftables util-linux
   elif command -v yum >/dev/null 2>&1; then
