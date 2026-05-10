@@ -3,13 +3,13 @@
 ## GitHub 一键运行
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/JiWangBuJiu/hy2-install/main/install_hysteria2.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/JiWangBuJiu/hy2-install/main/install.sh)
 ```
 
 如果系统没有 `curl`，可使用：
 
 ```bash
-wget -O install_hysteria2.sh https://raw.githubusercontent.com/JiWangBuJiu/hy2-install/main/install_hysteria2.sh && sudo bash install_hysteria2.sh
+wget -O install_hysteria2.sh https://raw.githubusercontent.com/JiWangBuJiu/hy2-install/main/install.sh && sudo bash install.sh
 ```
 
 仓库地址：[JiWangBuJiu/hy2-install](https://github.com/JiWangBuJiu/hy2-install)
