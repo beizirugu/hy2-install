@@ -16,6 +16,7 @@ SERVICE_NAME="hysteria-server.service"
 MODE="install"
 HY2_LOG_LEVEL="error"
 OBFS_ENABLED="false"
+NODE_NAME=""
 IO_TEST_MB=16
 IO_SLOW_THRESHOLD_MB=30
 PROGRESS_WIDTH=28
@@ -506,6 +507,9 @@ read_user_input() {
     esac
   done
 
+  printf "%b" "${BOLD}请输入节点名称（回车使用默认 Hysteria2-服务器IP）：${RESET}"
+  read -r NODE_NAME
+
   default_range=$(random_port_range)
   printf "%b" "${BOLD}请输入端口跳跃范围，例如 50000-60000（回车随机高位范围：${default_range}）：${RESET}"
   read -r input
@@ -517,6 +521,7 @@ read_user_input() {
     echo "认证密码: ${AUTH_PASSWORD}"
     echo "启用混淆: ${OBFS_ENABLED}"
     [[ ${OBFS_ENABLED} == "true" ]] && echo "混淆密码: ${OBFS_PASSWORD}"
+    echo "节点名称: ${NODE_NAME:-默认}"
     echo "端口范围: ${PORT_RANGE}"
   } >>"${LOG_FILE}"
 }
@@ -830,7 +835,7 @@ print_result() {
     uri_host="${server_ip}"
   fi
   auth_enc=$(uri_encode "${AUTH_PASSWORD}")
-  name_enc=$(uri_encode "Hysteria2-${server_ip}")
+  name_enc=$(uri_encode "${NODE_NAME:-Hysteria2-${server_ip}}")
   link="hysteria2://${auth_enc}@${uri_host}:${PORT_RANGE}/?insecure=1&sni=${SNI_DOMAIN}"
   if [[ ${OBFS_ENABLED} == "true" ]]; then
     obfs_enc=$(uri_encode "${OBFS_PASSWORD}")
