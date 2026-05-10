@@ -3,16 +3,16 @@
 ## GitHub 一键运行
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/JiWangBuJiu/hy2-install/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/beizirugu/hy2-install/main/install.sh)
 ```
 
 如果系统没有 `curl`，可使用：
 
 ```bash
-wget -O install_hysteria2.sh https://raw.githubusercontent.com/JiWangBuJiu/hy2-install/main/install.sh && sudo bash install.sh
+wget -O install_hysteria2.sh https://raw.githubusercontent.com/beizirugu/hy2-install/main/install.sh && sudo bash install.sh
 ```
 
-仓库地址：[JiWangBuJiu/hy2-install](https://github.com/JiWangBuJiu/hy2-install)
+仓库地址：[beizirugu/hy2-install](https://github.com/beizirugu/hy2-install)
 
 适用于 Ubuntu、Debian 及常见 systemd Linux。脚本会安装 Hysteria 2、写入服务端配置、优化 UDP/QUIC 相关内核参数，并在结束时打印 Shadowrocket / Hysteria 2 导入链接。
 
@@ -53,7 +53,7 @@ sudo bash install_hysteria2.sh
 ## 卸载
 
 ```bash
-sudo bash install_hysteria2.sh --uninstall
+sudo bash install.sh --uninstall
 ```
 
 卸载流程会先停止并禁用 `hysteria-server.service`，然后清理 Hysteria 相关 nftables 表，再尝试调用官方 `--remove`。最后会兜底删除本脚本写入的配置文件和服务覆盖配置。
