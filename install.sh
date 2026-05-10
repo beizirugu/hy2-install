@@ -15,6 +15,7 @@ MASQUERADE_URL="https://www.bing.com"
 SERVICE_NAME="hysteria-server.service"
 MODE="install"
 HY2_LOG_LEVEL="error"
+OBFS_ENABLED="false"
 IO_TEST_MB=16
 IO_SLOW_THRESHOLD_MB=30
 PROGRESS_WIDTH=28
@@ -483,9 +484,27 @@ read_user_input() {
   read -r input
   AUTH_PASSWORD=${input:-$(random_hex)}
 
-  printf "%b" "${BOLD}请输入 Salamander 混淆密码（回车随机生成）：${RESET}"
-  read -r input
-  OBFS_PASSWORD=${input:-$(random_hex)}
+  while true; do
+    printf "%b" "${BOLD}是否启用 Salamander 混淆？[y/n]：${RESET}"
+    read -r input
+    case "${input}" in
+      y|Y)
+        OBFS_ENABLED="true"
+        printf "%b" "${BOLD}请输入 Salamander 混淆密码（回车随机生成）：${RESET}"
+        read -r input
+        OBFS_PASSWORD=${input:-$(random_hex)}
+        break
+        ;;
+      n|N)
+        OBFS_ENABLED="false"
+        OBFS_PASSWORD=""
+        break
+        ;;
+      *)
+        warn "请输入 y 或 n。"
+        ;;
+    esac
+  done
 
   default_range=$(random_port_range)
   printf "%b" "${BOLD}请输入端口跳跃范围，例如 50000-60000（回车随机高位范围：${default_range}）：${RESET}"
@@ -496,7 +515,8 @@ read_user_input() {
 
   {
     echo "认证密码: ${AUTH_PASSWORD}"
-    echo "混淆密码: ${OBFS_PASSWORD}"
+    echo "启用混淆: ${OBFS_ENABLED}"
+    [[ ${OBFS_ENABLED} == "true" ]] && echo "混淆密码: ${OBFS_PASSWORD}"
     echo "端口范围: ${PORT_RANGE}"
   } >>"${LOG_FILE}"
 }
@@ -694,7 +714,6 @@ yaml_single_quote() {
 write_hysteria_config() {
   local auth_yaml obfs_yaml
   auth_yaml=$(yaml_single_quote "${AUTH_PASSWORD}")
-  obfs_yaml=$(yaml_single_quote "${OBFS_PASSWORD}")
   info "写入 Hysteria 2 服务端配置"
   cat >"${HY2_CONFIG}" <<EOF
 listen: :${PORT_RANGE}
@@ -707,11 +726,20 @@ auth:
   type: password
   password: ${auth_yaml}
 
+EOF
+
+  if [[ ${OBFS_ENABLED} == "true" ]]; then
+    obfs_yaml=$(yaml_single_quote "${OBFS_PASSWORD}")
+    cat >>"${HY2_CONFIG}" <<EOF
 obfs:
   type: salamander
   salamander:
     password: ${obfs_yaml}
 
+EOF
+  fi
+
+  cat >>"${HY2_CONFIG}" <<EOF
 quic:
   initStreamReceiveWindow: ${QUIC_STREAM}
   maxStreamReceiveWindow: ${QUIC_STREAM}
@@ -802,9 +830,13 @@ print_result() {
     uri_host="${server_ip}"
   fi
   auth_enc=$(uri_encode "${AUTH_PASSWORD}")
-  obfs_enc=$(uri_encode "${OBFS_PASSWORD}")
   name_enc=$(uri_encode "Hysteria2-${server_ip}")
-  link="hysteria2://${auth_enc}@${uri_host}:${PORT_RANGE}/?insecure=1&sni=${SNI_DOMAIN}&obfs=salamander&obfs-password=${obfs_enc}#${name_enc}"
+  link="hysteria2://${auth_enc}@${uri_host}:${PORT_RANGE}/?insecure=1&sni=${SNI_DOMAIN}"
+  if [[ ${OBFS_ENABLED} == "true" ]]; then
+    obfs_enc=$(uri_encode "${OBFS_PASSWORD}")
+    link="${link}&obfs=salamander&obfs-password=${obfs_enc}"
+  fi
+  link="${link}#${name_enc}"
 
   {
     echo
@@ -817,8 +849,12 @@ print_result() {
   printf "%b\n" "详细日志：${LOG_FILE}"
   printf "%b\n" "监听端口：UDP ${PORT_RANGE}"
   printf "%b\n" "认证密码：${AUTH_PASSWORD}"
-  printf "%b\n" "混淆类型：salamander"
-  printf "%b\n" "混淆密码：${OBFS_PASSWORD}"
+  if [[ ${OBFS_ENABLED} == "true" ]]; then
+    printf "%b\n" "混淆类型：salamander"
+    printf "%b\n" "混淆密码：${OBFS_PASSWORD}"
+  else
+    printf "%b\n" "混淆状态：未启用"
+  fi
   printf "%b\n" "日志级别：${HY2_LOG_LEVEL}"
   printf "%b\n" "TLS SNI：${SNI_DOMAIN}（自签名，客户端需 insecure=1）"
   printf "\n%b\n" "${BOLD}Shadowrocket / Hysteria 2 导入链接：${RESET}"
