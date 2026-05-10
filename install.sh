@@ -72,6 +72,7 @@ show_progress() {
   local spin_char
   local idx=0
   local start_ts elapsed state percent label used_percent=0
+  local last_percent="" progress_changes=0
 
   if [[ ! -t 1 ]]; then
     while [[ ! -s ${status_file} ]]; do
@@ -89,10 +90,22 @@ show_progress() {
       percent=${state%%|*}
       label=${state#*|}
       if [[ ${percent} =~ ^[0-9]+$ ]]; then
-        used_percent=1
-        draw_progress "${percent}" "${label:-APT 正在处理}"
+        if [[ ${percent} != "${last_percent}" ]]; then
+          progress_changes=$((progress_changes + 1))
+          last_percent=${percent}
+        fi
+        if (( progress_changes >= 3 )); then
+          used_percent=1
+          draw_progress "${percent}" "${label:-APT 正在处理}，已运行 ${elapsed}s"
+        else
+          draw_activity "${label:-APT 正在处理}" "${spin_char}" "${elapsed}"
+        fi
       else
-        draw_activity "${fallback_label}" "${spin_char}" "${elapsed}"
+        if [[ ${state} == activity\|* ]]; then
+          draw_activity "${state#activity|}" "${spin_char}" "${elapsed}"
+        else
+          draw_activity "${fallback_label}" "${spin_char}" "${elapsed}"
+        fi
       fi
     else
       draw_activity "${fallback_label}" "${spin_char}" "${elapsed}"
@@ -149,6 +162,32 @@ parse_apt_progress() {
   done
 }
 
+parse_apt_update_output() {
+  local progress_file=$1
+  local line count=0 label
+
+  while IFS= read -r line; do
+    printf '%s\n' "${line}" >>"${LOG_FILE}"
+    case "${line}" in
+      Hit:*|Get:*|Ign:*|Err:*)
+        count=$((count + 1))
+        label=${line:0:70}
+        printf 'activity|已处理 %s 个源：%s\n' "${count}" "${label}" >"${progress_file}"
+        ;;
+      "Fetched "*)
+        label=${line:0:70}
+        printf 'activity|%s\n' "${label}" >"${progress_file}"
+        ;;
+      "Reading package lists"*)
+        printf 'activity|正在读取软件包列表\n' >"${progress_file}"
+        ;;
+      "Building dependency tree"*)
+        printf 'activity|正在构建依赖关系\n' >"${progress_file}"
+        ;;
+    esac
+  done
+}
+
 on_error() {
   local code=$?
   local line=${1:-unknown}
@@ -201,6 +240,36 @@ run_cmd() {
   wait "${pid}" 2>/dev/null || true
   code=$(cat "${status_file}")
   rm -f "${status_file}"
+  return "${code}"
+}
+
+run_apt_update() {
+  local desc=$1
+  local status_file progress_file pid code
+  shift
+  info "${desc}"
+  {
+    echo
+    echo "[$(date '+%F %T')] ${desc}"
+    printf '+'
+    printf ' %q' apt-get "$@"
+    echo
+  } >>"${LOG_FILE}"
+
+  status_file=$(mktemp)
+  progress_file=$(mktemp)
+  (
+    set +e
+    DEBIAN_FRONTEND=noninteractive apt-get "$@" 2>&1 | parse_apt_update_output "${progress_file}"
+    code=${PIPESTATUS[0]}
+    printf '%s' "${code}" >"${status_file}"
+  ) &
+  pid=$!
+
+  show_progress "${status_file}" "${progress_file}" "APT 更新中"
+  wait "${pid}" 2>/dev/null || true
+  code=$(cat "${status_file}")
+  rm -f "${status_file}" "${progress_file}"
   return "${code}"
 }
 
@@ -347,7 +416,7 @@ parse_args() {
 install_deps() {
   info "检查并安装必要组件"
   if command -v apt-get >/dev/null 2>&1; then
-    run_apt_cmd "更新 apt 软件源" update
+    run_apt_update "更新 apt 软件源" update
     run_apt_cmd "安装依赖：curl/openssl/nftables" install -y curl ca-certificates openssl procps iproute2 nftables util-linux
   elif command -v dnf >/dev/null 2>&1; then
     run_cmd "安装依赖：curl/openssl/nftables" dnf install -y curl ca-certificates openssl procps-ng iproute nftables util-linux
