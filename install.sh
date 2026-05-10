@@ -17,8 +17,6 @@ MODE="install"
 HY2_LOG_LEVEL="error"
 OBFS_ENABLED="false"
 NODE_NAME=""
-XANMOD_INSTALLED="false"
-XANMOD_PACKAGE=""
 IO_TEST_MB=16
 IO_SLOW_THRESHOLD_MB=30
 PROGRESS_WIDTH=28
@@ -430,231 +428,6 @@ install_deps() {
     fail "未找到受支持的软件包管理器，请先手动安装 curl、openssl、procps、iproute2、nftables。"
     exit 1
   fi
-}
-
-detect_xanmod_cpu_level() {
-  local checker output level flags
-  checker=$(mktemp)
-
-  if curl -fsSL https://dl.xanmod.org/check_x86-64_psabi.sh -o "${checker}" >>"${LOG_FILE}" 2>&1; then
-    chmod +x "${checker}"
-    output=$("${checker}" 2>>"${LOG_FILE}" || true)
-    level=$(printf '%s\n' "${output}" | grep -oE 'x86-64-v[0-9]+' | tail -n1 | grep -oE '[0-9]+$' || true)
-    rm -f "${checker}"
-    if [[ -n ${level} ]]; then
-      printf '%s' "${level}"
-      return 0
-    fi
-  else
-    rm -f "${checker}"
-  fi
-
-  flags=$(awk -F: '/flags/ {print $2; exit}' /proc/cpuinfo 2>>"${LOG_FILE}" || true)
-  level=0
-  if [[ ${flags} == *" lm "* && ${flags} == *" cmov "* && ${flags} == *" cx8 "* && ${flags} == *" fpu "* && ${flags} == *" fxsr "* && ${flags} == *" mmx "* && ${flags} == *" syscall "* && ${flags} == *" sse2 "* ]]; then
-    level=1
-  fi
-  if (( level == 1 )) && [[ ${flags} == *" cx16 "* && ${flags} == *" lahf_lm "* && ${flags} == *" popcnt "* && ${flags} == *" sse4_1 "* && ${flags} == *" sse4_2 "* && ${flags} == *" ssse3 "* ]]; then
-    level=2
-  fi
-  if (( level == 2 )) && [[ ${flags} == *" avx "* && ${flags} == *" avx2 "* && ${flags} == *" bmi1 "* && ${flags} == *" bmi2 "* && ${flags} == *" f16c "* && ${flags} == *" fma "* && ${flags} == *" abm "* && ${flags} == *" movbe "* && ${flags} == *" xsave "* ]]; then
-    level=3
-  fi
-
-  if (( level > 0 )); then
-    printf '%s' "${level}"
-    return 0
-  fi
-  return 1
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-# select_xanmod_package
-#
-# 从已更新的 APT 缓存里动态探测合适的 XanMod 包名。
-# 必须在包含 XanMod 源的 apt-get update 完成之后调用。
-#
-# 参数  : $1 = CPU x86-64 psABI 等级（1/2/3/4）
-# 副作用: 成功时将全局变量 XANMOD_PACKAGE 设为选中的包名。
-# 返回值: 找到可用包时返回 0，否则返回 1（调用方负责处理，不触发 ERR trap）。
-# ──────────────────────────────────────────────────────────────────────────────
-select_xanmod_package() {
-  local level=$1
-  local search_level candidates preferred
-
-  # XanMod 官方仓库通常不单独发布 x64v4 包；
-  # v4 CPU 完全兼容 v3 指令集，直接回退搜索 v3。
-  if [[ "${level}" == "4" ]]; then
-    search_level=3
-    warn "XanMod 仓库通常不提供独立 x64v4 包，将以 x64v3 替代（v4 CPU 完全兼容）。"
-  else
-    search_level="${level}"
-  fi
-
-  echo "[select_xanmod_package] 搜索 x64v${search_level} 包（原始 level=${level}）" >>"${LOG_FILE}"
-
-  # apt-cache search 返回格式："包名 - 描述"
-  # 过滤规则：
-  #   - 必须包含 x64v${search_level}
-  #   - 排除实时内核（名称中含 -rt-）
-  #   - 排除纯 headers 包（包名以 -headers 结尾）
-  # 管道末尾 || true 确保在无匹配时不触发 set -e / pipefail。
-  candidates=$(
-    apt-cache search "linux-xanmod" 2>>"${LOG_FILE}" \
-      | grep -E "x64v${search_level}" \
-      | grep -v -- '-rt-' \
-      | awk '{print $1}' \
-      | grep -vE -- '-headers$' \
-    || true
-  )
-
-  echo "[select_xanmod_package] 候选包列表：$(printf '%s' "${candidates}" | tr '\n' ' ')" >>"${LOG_FILE}"
-
-  if [[ -z "${candidates}" ]]; then
-    XANMOD_PACKAGE=""
-    return 1
-  fi
-
-  # 优先级 1：主线包（名称中不含 lts 或 edge 标记）
-  preferred=$(printf '%s\n' "${candidates}" | grep -vE -- '(lts|edge)' | head -n1 || true)
-
-  # 优先级 2：LTS 包
-  if [[ -z "${preferred}" ]]; then
-    preferred=$(printf '%s\n' "${candidates}" | grep -- '-lts-' | head -n1 || true)
-  fi
-
-  # 优先级 3：其余任意候选
-  if [[ -z "${preferred}" ]]; then
-    preferred=$(printf '%s\n' "${candidates}" | head -n1 || true)
-  fi
-
-  if [[ -z "${preferred}" ]]; then
-    XANMOD_PACKAGE=""
-    return 1
-  fi
-
-  XANMOD_PACKAGE="${preferred}"
-  echo "[select_xanmod_package] 最终选定：${XANMOD_PACKAGE}" >>"${LOG_FILE}"
-  return 0
-}
-
-refresh_grub_config() {
-  if command -v update-grub >/dev/null 2>&1; then
-    run_cmd "更新 GRUB 引导配置" update-grub
-  elif [[ -x /usr/sbin/update-grub ]]; then
-    run_cmd "更新 GRUB 引导配置" /usr/sbin/update-grub
-  elif command -v grub-mkconfig >/dev/null 2>&1 && [[ -d /boot/grub ]]; then
-    run_cmd "更新 GRUB 引导配置" grub-mkconfig -o /boot/grub/grub.cfg
-  else
-    warn "未找到 update-grub/grub-mkconfig，请重启前手动确认引导配置。"
-    echo "未找到 GRUB 更新命令" >>"${LOG_FILE}"
-  fi
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-# install_xanmod_bbrv3
-#
-# 添加 XanMod APT 源、更新缓存后动态选包并安装，最后刷新 GRUB。
-# 任何前置条件不满足或找不到合适包时均通过 warn + return 0 优雅跳过，
-# 不会导致整个脚本因 strict mode 崩溃。
-# ──────────────────────────────────────────────────────────────────────────────
-install_xanmod_bbrv3() {
-  local level key_file
-
-  info "准备安装 XanMod BBRv3 内核"
-
-  # ── 环境前置检查 ──────────────────────────────────────────────────────────
-  if ! command -v apt-get >/dev/null 2>&1; then
-    warn "XanMod 可选安装仅支持 Debian/Ubuntu 的 apt 系统，已跳过。"
-    return 0
-  fi
-
-  if [[ "${OS_ID}" != "debian" && "${OS_ID}" != "ubuntu" && "${OS_LIKE}" != *debian* ]]; then
-    warn "当前系统不是 Debian/Ubuntu 系，已跳过 XanMod 内核安装。"
-    return 0
-  fi
-
-  if [[ "$(uname -m)" != "x86_64" && "$(uname -m)" != "amd64" ]]; then
-    warn "XanMod 官方仓库主要支持 x86_64/amd64，当前架构不适合安装，已跳过。"
-    return 0
-  fi
-
-  if command -v systemd-detect-virt >/dev/null 2>&1 \
-     && systemd-detect-virt --container >/dev/null 2>&1; then
-    warn "检测到容器环境，不能更换宿主机内核，已跳过。"
-    return 0
-  fi
-
-  if command -v mokutil >/dev/null 2>&1 \
-     && mokutil --sb-state 2>>"${LOG_FILE}" | grep -qi enabled; then
-    warn "检测到 Secure Boot 已开启，XanMod 内核可能无法启动，已跳过。"
-    return 0
-  fi
-
-  # ── 探测 CPU psABI 等级（仅确定等级，此时尚未需要包名）────────────────────
-  level=$(detect_xanmod_cpu_level || true)
-  if [[ -z "${level}" ]]; then
-    warn "未能识别 CPU x86-64 psABI 等级，已跳过 XanMod 内核安装。"
-    return 0
-  fi
-  ok "CPU 等级：x86-64-v${level}"
-
-  # ── 添加 XanMod APT 源 ────────────────────────────────────────────────────
-  run_apt_cmd "安装 XanMod 仓库依赖" install -y gnupg ca-certificates curl
-  run_cmd "创建 APT keyrings 目录" mkdir -p /etc/apt/keyrings
-
-  key_file=$(mktemp)
-  run_cmd "下载 XanMod 官方 GPG 密钥" \
-    curl -fsSL https://dl.xanmod.org/archive.key -o "${key_file}"
-  run_cmd "写入 XanMod GPG keyring" \
-    gpg --dearmor --yes -o /etc/apt/keyrings/xanmod-archive-keyring.gpg "${key_file}"
-  rm -f "${key_file}"
-
-  info "写入 XanMod APT 源"
-  printf 'deb [signed-by=/etc/apt/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main\n' \
-    > /etc/apt/sources.list.d/xanmod-release.list
-  echo "已写入 XanMod APT 源: /etc/apt/sources.list.d/xanmod-release.list" >>"${LOG_FILE}"
-
-  # ── 更新缓存（必须在此之后才能用 apt-cache search 查到 XanMod 包名）───────
-  run_apt_update "更新 XanMod 软件源" update
-
-  # ── 动态选包：在真实缓存中搜索，不写死包名 ────────────────────────────────
-  # 用 if ! 调用，函数返回 1 时不触发 ERR trap。
-  if ! select_xanmod_package "${level}"; then
-    warn "在 XanMod 仓库中未找到适合 x86-64-v${level} 的内核包，已跳过安装。"
-    warn "可手动运行 'apt-cache search linux-xanmod' 查看当前可用包名。"
-    return 0
-  fi
-  ok "已选定内核包：${XANMOD_PACKAGE}"
-
-  # ── 安装内核并刷新引导 ────────────────────────────────────────────────────
-  run_apt_cmd "安装 XanMod 内核：${XANMOD_PACKAGE}" install -y "${XANMOD_PACKAGE}"
-  refresh_grub_config
-
-  XANMOD_INSTALLED="true"
-  ok "XanMod 内核已安装；需要重启后才会进入新内核并使用 BBRv3。"
-}
-
-ask_xanmod_bbrv3() {
-  local input confirm
-  printf "%b\n" "${YELLOW}${BOLD}可选高危项：安装 XanMod 内核以使用 BBRv3。${RESET}"
-  printf "%b\n" "这会添加 XanMod APT 源、安装新 Linux 内核并更新 GRUB；旧内核会保留，脚本不会自动重启。"
-  printf "%b" "${BOLD}是否安装 XanMod/BBRv3 内核？[y/N]：${RESET}"
-  read -r input
-  case "${input}" in
-    y|Y)
-      printf "%b" "${BOLD}请再次输入 YES 确认更换内核（其他输入跳过）：${RESET}"
-      read -r confirm
-      if [[ ${confirm} == "YES" ]]; then
-        install_xanmod_bbrv3
-      else
-        ok "已跳过 XanMod 内核安装。"
-      fi
-      ;;
-    *)
-      ok "已跳过 XanMod 内核安装。"
-      ;;
-  esac
 }
 
 hysteria_running() {
@@ -1157,9 +930,6 @@ print_result() {
     printf "%b\n" "混淆状态：未启用"
   fi
   printf "%b\n" "日志级别：${HY2_LOG_LEVEL}"
-  if [[ ${XANMOD_INSTALLED} == "true" ]]; then
-    printf "%b\n" "XanMod 内核：已安装 ${XANMOD_PACKAGE}，重启后生效"
-  fi
   printf "%b\n" "TLS SNI：${SNI_DOMAIN}（自签名，客户端需 insecure=1）"
   printf "\n%b\n" "${BOLD}Shadowrocket / Hysteria 2 导入链接：${RESET}"
   printf "%s\n" "${link}"
@@ -1179,7 +949,6 @@ main() {
   handle_existing_hysteria
   detect_os
   install_deps
-  ask_xanmod_bbrv3
   read_user_input
   enable_bbr_and_tune_kernel
   install_hysteria
